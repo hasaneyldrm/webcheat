@@ -1,13 +1,13 @@
 /**
- * WebCheat panel — CE penceresi.
- * Hedef sekmeyi/frame'i secer, agent'a RPC atar, sonuclari gosterir.
+ * WebCheat panel — CE window.
+ * Selects the target tab/frame, sends RPC calls to the agent, and displays results.
  */
 'use strict';
 
 const $ = (id) => document.getElementById(id);
 
 /* ------------------------------------------------------------------ *
- * Durum
+ * State
  * ------------------------------------------------------------------ */
 const state = {
   targets: [],
@@ -19,53 +19,53 @@ const state = {
   speed: 1,
   prevSpeed: 1,
   regionPoll: null,
-  list: [],        // adres listesi: {key, desc, region, addr, type, value, frozen, freezeId}
+  list: [],        // address list: {key, desc, region, addr, type, value, frozen, freezeId}
   keySeq: 0
 };
 
 const FIRST_CMPS = [
-  ['eq', 'Tam deger'],
-  ['unknown', 'Bilinmeyen baslangic degeri'],
-  ['gt', 'Buyuktur'],
-  ['lt', 'Kucuktur'],
-  ['between', 'Arasinda']
+  ['eq', 'Exact value'],
+  ['unknown', 'Unknown initial value'],
+  ['gt', 'Greater than'],
+  ['lt', 'Less than'],
+  ['between', 'Between']
 ];
 
 const NEXT_CMPS = [
-  ['eq', 'Tam deger'],
-  ['changed', 'Degisti'],
-  ['unchanged', 'Degismedi'],
-  ['inc', 'Artti'],
-  ['dec', 'Azaldi'],
-  ['incBy', 'Su kadar artti'],
-  ['decBy', 'Su kadar azaldi'],
-  ['gt', 'Buyuktur'],
-  ['lt', 'Kucuktur'],
-  ['between', 'Arasinda']
+  ['eq', 'Exact value'],
+  ['changed', 'Changed'],
+  ['unchanged', 'Unchanged'],
+  ['inc', 'Increased'],
+  ['dec', 'Decreased'],
+  ['incBy', 'Increased by'],
+  ['decBy', 'Decreased by'],
+  ['gt', 'Greater than'],
+  ['lt', 'Less than'],
+  ['between', 'Between']
 ];
 
 const NO_VALUE = new Set(['unknown', 'changed', 'unchanged', 'inc', 'dec']);
 
 /* ------------------------------------------------------------------ *
- * Mesajlasma
+ * Messaging
  * ------------------------------------------------------------------ */
 function bg(msg) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ __wcePanel: true, ...msg }, (res) => {
       if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
-      else resolve(res || { error: 'bos yanit' });
+      else resolve(res || { error: 'empty response' });
     });
   });
 }
 
 async function rpc(cmd, args = {}) {
-  if (state.tabId === null || state.frameId === null) return { error: 'hedef secilmedi' };
+  if (state.tabId === null || state.frameId === null) return { error: 'no target selected' };
   return bg({ op: 'rpc', tabId: state.tabId, frameId: state.frameId, payload: { cmd, args } });
 }
 
-/** Secili frame'i degil, belirtilen frame'i sorgular. */
+/** Queries the specified frame rather than the selected frame. */
 async function rpcFrame(frameId, cmd, args = {}) {
-  if (state.tabId === null) return { error: 'sekme secilmedi' };
+  if (state.tabId === null) return { error: 'no tab selected' };
   return bg({ op: 'rpc', tabId: state.tabId, frameId, payload: { cmd, args } });
 }
 
@@ -84,12 +84,12 @@ function setStatus(text, cls) {
 }
 
 /* ------------------------------------------------------------------ *
- * Hedef secimi
+ * Target selection
  * ------------------------------------------------------------------ */
 async function refreshTargets() {
-  setStatus('sekmeler taraniyor...', 'busy');
+  setStatus('scanning tabs...', 'busy');
   const res = await bg({ op: 'listTargets' });
-  if (res.error) { setStatus('hata: ' + res.error); return; }
+  if (res.error) { setStatus('error: ' + res.error); return; }
 
   state.targets = res.result || [];
   const tabSel = $('tabSel');
@@ -97,18 +97,18 @@ async function refreshTargets() {
   tabSel.textContent = '';
 
   if (!state.targets.length) {
-    tabSel.append(new Option('— agent yuklu sekme yok —', ''));
+    tabSel.append(new Option('— no tabs with the agent —', ''));
     $('frameSel').textContent = '';
-    setStatus('sekme bulunamadi');
-    toast('Oyunun sekmesini bir kez yenile (uzanti kurulmadan once acilmis sayfalarda agent yok).', 6000);
+    setStatus('no tab found');
+    toast('Reload the game tab once (pages opened before the extension was installed do not have the agent).', 6000);
     return;
   }
 
   for (const t of state.targets) {
     const mark = t.hasMemory ? '[WASM] '
-      : t.discarded ? '[askida] '
+      : t.discarded ? '[discarded] '
       : t.hasAgent ? ''
-      : '[agent yok] ';
+      : '[no agent] ';
     const label = mark + (t.title.length > 54 ? t.title.slice(0, 54) + '…' : t.title);
     tabSel.append(new Option(label, String(t.tabId)));
   }
@@ -128,26 +128,26 @@ function selectTab(tabId) {
   frameSel.textContent = '';
   if (!tab) return;
 
-  // Agent yok: content script bu sekmeye hic enjekte olmamis (sekme uzanti
-  // kurulmadan/yenilenmeden once acilmis). Kullaniciya ne yapacagini soyle.
+  // No agent: the content script was never injected into this tab (it was
+  // opened before the extension was installed/reloaded). Tell the user what to do.
   if (!tab.frames.length) {
     state.frameId = null;
     state.regionId = null;
-    frameSel.append(new Option(tab.discarded ? '— sekme askida —' : '— agent yok —', ''));
+    frameSel.append(new Option(tab.discarded ? '— tab discarded —' : '— no agent —', ''));
     regionSel.textContent = '';
-    regionSel.append(new Option('— agent yok —', ''));
-    setStatus(tab.discarded ? 'sekme askida' : 'agent yok', '');
+    regionSel.append(new Option('— no agent —', ''));
+    setStatus(tab.discarded ? 'tab discarded' : 'no agent', '');
     toast(tab.discarded
-      ? 'Bu sekme Chrome tarafindan uykuya alinmis. Sekmeye bir gecip geri gel, sonra Yenile.'
-      : 'Bu sekmede agent yok. "Sekmeyi Yenile"ye bas — hook\'lar oyun yuklenmeden once takilmali.', 6000);
+      ? 'Chrome has put this tab to sleep. Visit the tab, come back, then click Refresh.'
+      : 'This tab has no agent. Click "Reload Tab" — hooks must be installed before the game loads.', 6000);
     return;
   }
 
   for (const f of tab.frames) {
     const n = f.regions.length;
-    const where = f.top ? 'ana sayfa' : 'iframe #' + f.frameId;
+    const where = f.top ? 'top page' : 'iframe #' + f.frameId;
     const url = f.url.length > 52 ? f.url.slice(0, 52) + '…' : f.url;
-    frameSel.append(new Option(`${where} — ${url}${n ? `  (${n} bellek)` : ''}`, String(f.frameId)));
+    frameSel.append(new Option(`${where} — ${url}${n ? `  (${n} memory region${n === 1 ? '' : 's'})` : ''}`, String(f.frameId)));
   }
 
   const best = tab.frames[0];
@@ -156,9 +156,9 @@ function selectTab(tabId) {
 }
 
 /**
- * Frame secildiginde bolgeleri CANLI sorar — listTargets sirasindaki
- * onbellege guvenmez. Oyun WASM'ini gec olusturdugunda (Playables'ta
- * normal) onbellek "bellek yok" der ve panel bir daha kendine gelmez.
+ * Queries regions LIVE when a frame is selected instead of trusting the
+ * listTargets cache. Games may create WASM late (common in Playables), which
+ * would otherwise leave the panel stuck at "no memory."
  */
 async function selectFrame(frameId) {
   state.frameId = frameId;
@@ -167,43 +167,43 @@ async function selectFrame(frameId) {
 
   const regionSel = $('regionSel');
   regionSel.textContent = '';
-  regionSel.append(new Option('— sorgulaniyor… —', ''));
-  setStatus('bellek araniyor…', 'busy');
+  regionSel.append(new Option('— querying… —', ''));
+  setStatus('looking for memory…', 'busy');
 
   await pollRegions(0);
 }
 
-/** Bellek cikana kadar birkac saniye yeniden dener (oyun yukleniyor olabilir). */
+/** Retries for a few seconds until memory appears (the game may still be loading). */
 async function pollRegions(attempt) {
   const askedFrame = state.frameId;
   const res = await rpc('regions');
-  if (state.frameId !== askedFrame) return;   // kullanici arada frame degistirdi
+  if (state.frameId !== askedFrame) return;   // the user changed frames in the meantime
 
   const regionSel = $('regionSel');
   const regions = (!res.error && res.result) || [];
 
   if (!regions.length) {
     regionSel.textContent = '';
-    regionSel.append(new Option('— bellek bulunamadi —', ''));
+    regionSel.append(new Option('— no memory found —', ''));
     state.regionId = null;
-    // 3 denemede cikmadiysa: diger frame'leri canli yokla, WASM'i olana atla.
-    // Playables'ta oyun ic iframe'de calisiyor; kullaniciyi elle aratmayalim.
+    // After 3 failed attempts, probe other frames live and switch to one with WASM.
+    // Playable games often run in a nested iframe; do not make the user search manually.
     if (attempt === 3) {
       const better = await findFrameWithMemory();
       if (better !== null && better !== state.frameId) {
         $('frameSel').value = String(better);
-        toast('Oyun ' + (better === 0 ? 'ana sayfada' : 'iframe #' + better + '\'de') + ' bulundu, oraya gecildi.', 3500);
+        toast('The game was found in ' + (better === 0 ? 'the top page' : 'iframe #' + better) + '; switched to it.', 3500);
         selectFrame(better);
         return;
       }
     }
 
     if (attempt < 20) {
-      setStatus(`bellek araniyor… (${attempt + 1})`, 'busy');
+      setStatus(`looking for memory… (${attempt + 1})`, 'busy');
       state.regionPoll = setTimeout(() => pollRegions(attempt + 1), 1000);
     } else {
-      setStatus('bellek yok', '');
-      toast('Bu frame\'de WASM bellegi yok. Oyun saf JS olabilir ya da baska bir iframe\'de.', 5000);
+      setStatus('no memory', '');
+      toast('This frame has no WASM memory. The game may use pure JavaScript or run in another iframe.', 5000);
     }
     return;
   }
@@ -211,20 +211,20 @@ async function pollRegions(attempt) {
   const keep = state.regionId;
   regionSel.textContent = '';
   for (const r of regions) {
-    const tag = r.shared ? ' [paylasimli]' : '';
+    const tag = r.shared ? ' [shared]' : '';
     regionSel.append(new Option(`${r.label} — ${fmtBytes(r.size)}${tag}`, r.id));
   }
   regionSel.value = regions.some((r) => r.id === keep) ? keep : regions[0].id;
   state.regionId = regionSel.value;
-  setStatus(`bagli — ${regions.length} bellek`, 'on');
+  setStatus(`connected — ${regions.length} memory region${regions.length === 1 ? '' : 's'}`, 'on');
 
   if (regions.some((r) => r.shared)) {
-    toast('Bellek paylasimli (pthread). Oyun dongusu bir Worker\'da calisiyor olabilir — ' +
-          'tarama calisir ama zaman kontrolu etkisiz kalabilir.', 7000);
+    toast('Memory is shared (pthread). The game loop may run in a Worker — ' +
+          'scanning will work, but time control may have no effect.', 7000);
   }
 }
 
-/** Sekmenin tum frame'lerini canli yoklar, WASM bellegi olan ilkini doner. */
+/** Probes all tab frames live and returns the first one with WASM memory. */
 async function findFrameWithMemory() {
   const tab = state.targets.find((t) => t.tabId === state.tabId);
   if (!tab) return null;
@@ -247,7 +247,7 @@ function fmtBytes(n) {
 }
 
 /* ------------------------------------------------------------------ *
- * Tarama
+ * Scanning
  * ------------------------------------------------------------------ */
 function fillCmp(list) {
   const sel = $('cmpSel');
@@ -265,7 +265,7 @@ function onCmpChange() {
 }
 
 async function doScan(kind) {
-  if (!state.regionId) { toast('Once taranacak bir bellek sec.'); return; }
+  if (!state.regionId) { toast('Select a memory region to scan first.'); return; }
   const cmp = $('cmpSel').value;
   const args = {
     region: state.regionId,
@@ -276,10 +276,10 @@ async function doScan(kind) {
     value2: $('val2Input').value
   };
 
-  if (!NO_VALUE.has(cmp) && args.value.trim() === '') { toast('Deger gir.'); return; }
+  if (!NO_VALUE.has(cmp) && args.value.trim() === '') { toast('Enter a value.'); return; }
 
   const res = await rpc(kind, args);
-  if (res.error) { toast('Hata: ' + res.error); return; }
+  if (res.error) { toast('Error: ' + res.error); return; }
 
   state.scanning = true;
   setScanUI(true);
@@ -291,23 +291,23 @@ function setScanUI(busy) {
   $('nextBtn').disabled = busy || !state.hasResults;
   $('newBtn').disabled = busy;
   $('cancelBtn').classList.toggle('hidden', !busy);
-  setStatus(busy ? 'taraniyor...' : 'bagli', busy ? 'busy' : 'on');
+  setStatus(busy ? 'scanning...' : 'connected', busy ? 'busy' : 'on');
 }
 
 async function pollProgress() {
   const res = await rpc('progress');
-  if (res.error) { state.scanning = false; setScanUI(false); toast('Hata: ' + res.error); return; }
+  if (res.error) { state.scanning = false; setScanUI(false); toast('Error: ' + res.error); return; }
   const p = res.result;
 
   const pct = p.total ? Math.min(100, (p.done / p.total) * 100) : 0;
   $('progBar').style.width = pct + '%';
-  $('foundText').innerHTML = `Bulunan: <b>${p.found.toLocaleString('tr-TR')}</b>` +
+  $('foundText').innerHTML = `Found: <b>${p.found.toLocaleString('en-US')}</b>` +
     (p.running ? ` — %${pct.toFixed(0)}` : '');
 
   if (p.error) {
     state.scanning = false;
     setScanUI(false);
-    toast('Tarama hatasi: ' + p.error);
+    toast('Scan error: ' + p.error);
     return;
   }
 
@@ -321,7 +321,7 @@ async function pollProgress() {
 
 async function loadResults() {
   const res = await rpc('results', { offset: 0, limit: 300 });
-  if (res.error) { toast('Hata: ' + res.error); return; }
+  if (res.error) { toast('Error: ' + res.error); return; }
   const r = res.result;
 
   state.hasResults = r.total > 0 || r.mode === 'all';
@@ -333,25 +333,25 @@ async function loadResults() {
 
   if (r.mode === 'all') {
     $('resHint').classList.remove('hidden');
-    $('resHint').innerHTML = '<b>Snapshot alindi.</b> Simdi oyunda degeri degistir, sonra ' +
-      '<b>Sonraki Tarama</b>\'da <b>Artti / Azaldi / Degisti</b> sec. Klasik "degerini bilmiyorum" akisi.';
-    $('foundText').innerHTML = `Snapshot: <b>${r.total.toLocaleString('tr-TR')}</b> aday adres`;
+    $('resHint').innerHTML = '<b>Snapshot captured.</b> Change the value in the game, then select ' +
+      '<b>Increased / Decreased / Changed</b> for the <b>Next Scan</b>. This is the classic unknown-value workflow.';
+    $('foundText').innerHTML = `Snapshot: <b>${r.total.toLocaleString('en-US')}</b> candidate addresses`;
     return;
   }
 
   $('resHint').classList.toggle('hidden', r.rows.length > 0);
-  if (r.truncated) toast(`Sonuc ${(4000000).toLocaleString('tr-TR')} adreste kesildi — daha dar bir deger ile tara.`, 5000);
+  if (r.truncated) toast(`Results were capped at ${(4000000).toLocaleString('en-US')} addresses — scan for a narrower value.`, 5000);
 
-  // "Hepsi" taramasinda hangi tipte kac eslesme var, ozet olarak goster
+  // For an "All" scan, summarize the number of matches for each type.
   if (r.multi && r.byType && Object.keys(r.byType).length) {
-    const parts = Object.entries(r.byType).map(([t, n]) => `${t}:${n.toLocaleString('tr-TR')}`);
-    $('foundText').innerHTML = `Bulunan: <b>${r.total.toLocaleString('tr-TR')}</b> — ${parts.join(' · ')}`;
+    const parts = Object.entries(r.byType).map(([t, n]) => `${t}:${n.toLocaleString('en-US')}`);
+    $('foundText').innerHTML = `Found: <b>${r.total.toLocaleString('en-US')}</b> — ${parts.join(' · ')}`;
   }
 
   for (const row of r.rows) {
     const tr = document.createElement('tr');
     tr.className = 'dbl';
-    tr.title = 'Cift tikla → adres listesine ekle';
+    tr.title = 'Double-click → add to address list';
     tr.append(
       td('0x' + row.addr.toString(16).toUpperCase()),
       td(row.type || ''),
@@ -364,7 +364,7 @@ async function loadResults() {
 
   if (r.total > r.rows.length) {
     const tr = document.createElement('tr');
-    const cell = td(`… ${(r.total - r.rows.length).toLocaleString('tr-TR')} sonuc daha (daralt)`);
+    const cell = td(`… ${(r.total - r.rows.length).toLocaleString('en-US')} more results (narrow the scan)`);
     cell.colSpan = 4;
     cell.style.color = 'var(--muted)';
     tr.append(cell);
@@ -379,9 +379,9 @@ function td(text) {
 }
 
 /* ------------------------------------------------------------------ *
- * Adres listesi
+ * Address list
  * ------------------------------------------------------------------ */
-/** Adres listesi somut bir tip ister — "all" oraya gecemez. */
+/** Address-list entries require a concrete type; "all" cannot be used there. */
 function concreteType(t) {
   return t && t !== 'all' ? t : (($('typeSel').value !== 'all' && $('typeSel').value) || 'i32');
 }
@@ -408,7 +408,7 @@ function renderList() {
   for (const e of state.list) {
     const tr = document.createElement('tr');
 
-    // dondur
+    // freeze
     const frz = document.createElement('td');
     const chk = document.createElement('input');
     chk.type = 'checkbox';
@@ -416,7 +416,7 @@ function renderList() {
     chk.addEventListener('change', () => toggleFreeze(e, chk.checked));
     frz.append(chk);
 
-    // aciklama
+    // description
     const desc = document.createElement('td');
     const dIn = document.createElement('input');
     dIn.type = 'text';
@@ -425,20 +425,20 @@ function renderList() {
     dIn.addEventListener('change', () => { e.desc = dIn.value; });
     desc.append(dIn);
 
-    // adres + tip
+    // address + type
     const addr = td('0x' + e.addr.toString(16).toUpperCase());
 
     const typ = document.createElement('td');
     const tSel = document.createElement('select');
     for (const opt of $('typeSel').options) {
-      if (opt.value === 'all') continue;   // liste satiri somut tip ister
+      if (opt.value === 'all') continue;   // list rows require a concrete type
       tSel.append(new Option(opt.value, opt.value));
     }
     tSel.value = e.type;
     tSel.addEventListener('change', () => { e.type = tSel.value; if (e.frozen) toggleFreeze(e, true); });
     typ.append(tSel);
 
-    // deger
+    // value
     const val = document.createElement('td');
     const vIn = document.createElement('input');
     vIn.type = 'text';
@@ -446,19 +446,19 @@ function renderList() {
     vIn.dataset.key = e.key;
     vIn.addEventListener('change', async () => {
       const res = await rpc('write', { region: e.region, addr: e.addr, type: e.type, value: vIn.value });
-      if (res.error) { toast('Yazilamadi: ' + res.error); return; }
+      if (res.error) { toast('Could not write: ' + res.error); return; }
       e.value = vIn.value;
-      if (e.frozen) toggleFreeze(e, true);   // dondurma degerini tazele
-      toast('Yazildi: 0x' + e.addr.toString(16).toUpperCase() + ' = ' + vIn.value, 1400);
+      if (e.frozen) toggleFreeze(e, true);   // refresh the frozen value
+      toast('Written: 0x' + e.addr.toString(16).toUpperCase() + ' = ' + vIn.value, 1400);
     });
     val.append(vIn);
 
-    // sil
+    // remove
     const act = document.createElement('td');
     const x = document.createElement('button');
     x.className = 'cell-x';
     x.textContent = '×';
-    x.title = 'Kaldir';
+    x.title = 'Remove';
     x.addEventListener('click', async () => {
       if (e.freezeId) await rpc('unfreeze', { id: e.freezeId });
       state.list = state.list.filter((o) => o !== e);
@@ -474,7 +474,7 @@ function renderList() {
 async function toggleFreeze(e, on) {
   if (on) {
     const res = await rpc('freeze', { id: e.freezeId, region: e.region, addr: e.addr, type: e.type, value: e.value });
-    if (res.error) { toast('Dondurulamadi: ' + res.error); return; }
+    if (res.error) { toast('Could not freeze: ' + res.error); return; }
     e.freezeId = res.result.id;
     e.frozen = true;
   } else {
@@ -484,7 +484,7 @@ async function toggleFreeze(e, on) {
   }
 }
 
-/** Listedeki adreslerin canli degerlerini tazele (dondurulmayanlar). */
+/** Refresh live values for addresses in the list (except frozen entries). */
 async function refreshListValues() {
   if (!state.list.length || state.tabId === null) return;
   const items = state.list
@@ -507,7 +507,7 @@ async function refreshListValues() {
 }
 
 /* ------------------------------------------------------------------ *
- * Zaman kontrolu
+ * Time control
  * ------------------------------------------------------------------ */
 const PRESETS = [0.25, 0.5, 1, 2, 4, 8];
 
@@ -529,58 +529,58 @@ function applySpeedUI(s) {
   for (const b of $('presets').children) {
     b.classList.toggle('on', Number(b.dataset.speed) === s);
   }
-  $('pauseBtn').textContent = s === 0 ? 'Devam Et' : 'Duraklat';
+  $('pauseBtn').textContent = s === 0 ? 'Resume' : 'Pause';
   $('pauseBtn').classList.toggle('on', s === 0);
   $('stepBtn').disabled = s !== 0;
 }
 
 async function setSpeed(s) {
   const res = await rpc('setSpeed', { speed: s });
-  if (res.error) { toast('Hiz ayarlanamadi: ' + res.error); return; }
+  if (res.error) { toast('Could not set speed: ' + res.error); return; }
   applySpeedUI(res.result.speed);
 }
 
 /**
- * Teshis satiri. "Hiz calismiyor" sikayetinin sebebini dogrudan gosterir:
- * oyun dongusu bu frame'de mi, saati okuyor mu, kac fps.
+ * Diagnostics line. Directly explains why speed control may not work:
+ * whether the game loop is in this frame, whether it reads the clock, and its FPS.
  */
 async function refreshDiag() {
   const el = $('diag');
-  if (state.tabId === null || state.frameId === null) { el.textContent = 'hedef secilmedi'; return; }
+  if (state.tabId === null || state.frameId === null) { el.textContent = 'no target selected'; return; }
 
   const res = await rpc('diag');
-  if (res.error || !res.result) { el.textContent = 'teshis alinamadi: ' + (res.error || '?'); return; }
+  if (res.error || !res.result) { el.textContent = 'diagnostics unavailable: ' + (res.error || '?'); return; }
   const d = res.result;
 
   const lines = [];
-  const engines = d.engines.length ? d.engines.join(', ') : 'bilinmiyor';
-  lines.push(`motor: <b>${engines}</b> · bellek: <b>${d.regions}</b>`);
+  const engines = d.engines.length ? d.engines.join(', ') : 'unknown';
+  lines.push(`engine: <b>${engines}</b> · memory regions: <b>${d.regions}</b>`);
 
   if (d.fps > 0) {
-    lines.push(`render dongusu: <span class="good">${d.fps} fps</span> · saat okuma: <b>${d.nowReads.toLocaleString('tr-TR')}</b>`);
+    lines.push(`render loop: <span class="good">${d.fps} fps</span> · clock reads: <b>${d.nowReads.toLocaleString('en-US')}</b>`);
   } else if (d.timers > 0) {
-    lines.push(`<span class="warn">rAF yok</span> · zamanlayici ile suruluyor (${d.timers}) · saat okuma: <b>${d.nowReads.toLocaleString('tr-TR')}</b>`);
+    lines.push(`<span class="warn">no rAF</span> · timer-driven (${d.timers}) · clock reads: <b>${d.nowReads.toLocaleString('en-US')}</b>`);
   } else {
-    lines.push('<span class="bad">bu frame\'de calisan bir oyun dongusu yok</span>');
+    lines.push('<span class="bad">no game loop is running in this frame</span>');
   }
 
   if (d.nowReads === 0 && d.dateReads === 0 && d.fps > 0) {
-    lines.push('<span class="bad">oyun saati hic okumuyor → hiz degisimi etki etmez</span>');
+    lines.push('<span class="bad">the game never reads the clock → speed changes have no effect</span>');
   }
   if (d.shared) {
-    lines.push('<span class="bad">paylasimli bellek (pthread)</span> — dongu Worker\'da olabilir, zaman kontrolu ulasamaz');
+    lines.push('<span class="bad">shared memory (pthread)</span> — the loop may run in a Worker, beyond the reach of time control');
   }
   if (!d.dirty) {
-    lines.push('saat: <b>pass-through</b> (hiz henuz degistirilmedi)');
+    lines.push('clock: <b>pass-through</b> (speed has not been changed)');
   } else {
-    lines.push(`saat: <b>aktif ${d.speed}x</b>`);
+    lines.push(`clock: <b>active at ${d.speed}x</b>`);
   }
 
   el.innerHTML = lines.join('<br>');
 }
 
 /* ------------------------------------------------------------------ *
- * Baglama
+ * Event wiring
  * ------------------------------------------------------------------ */
 function wire() {
   $('refreshBtn').addEventListener('click', refreshTargets);
@@ -588,8 +588,8 @@ function wire() {
     if (state.tabId === null) return;
     const keep = state.tabId;
     await bg({ op: 'reload', tabId: keep });
-    setStatus('sekme yenileniyor…', 'busy');
-    // Sayfa acilsin, agent enjekte olsun, sonra kendiliginden tazele
+    setStatus('reloading tab…', 'busy');
+    // Let the page load and the agent inject, then refresh automatically.
     setTimeout(async () => {
       state.tabId = keep;
       await refreshTargets();
@@ -610,18 +610,18 @@ function wire() {
     fillCmp(FIRST_CMPS);
     $('resBody').textContent = '';
     $('progBar').style.width = '0';
-    $('foundText').textContent = 'Sonuc yok';
+    $('foundText').textContent = 'No results';
     $('resHint').classList.remove('hidden');
-    $('resHint').innerHTML = 'Degeri oyunda gordugun gibi gir, <b>Ilk Tarama</b>\'ya bas. ' +
-      'Sonra oyunda degeri degistir, <b>Sonraki Tarama</b> ile daralt. Satira cift tikla &rarr; listeye ekle.';
+    $('resHint').innerHTML = 'Enter the value exactly as it appears in the game, then click <b>First Scan</b>. ' +
+      'Change the value in the game and narrow the results with <b>Next Scan</b>. Double-click a row &rarr; add it to the list.';
     setScanUI(false);
   });
 
   $('addManualBtn').addEventListener('click', () => {
-    const raw = prompt('Adres (0x... veya ondalik):');
+    const raw = prompt('Address (0x... or decimal):');
     if (!raw) return;
     const addr = raw.trim().toLowerCase().startsWith('0x') ? parseInt(raw.trim(), 16) : parseInt(raw.trim(), 10);
-    if (!Number.isFinite(addr) || addr < 0) { toast('Gecersiz adres.'); return; }
+    if (!Number.isFinite(addr) || addr < 0) { toast('Invalid address.'); return; }
     addToList(addr, concreteType(null), '');
   });
 
@@ -645,7 +645,7 @@ function wire() {
 }
 
 /* ------------------------------------------------------------------ *
- * Baslangic
+ * Initialization
  * ------------------------------------------------------------------ */
 buildPresets();
 fillCmp(FIRST_CMPS);

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "WebCheat",
   "version": "0.1.0",
-  "description": "Tarayici oyunlari icin bellek tarayici ve zaman kontrolu. Sekmeyi sec, degeri bul, degistir.",
+  "description": "Memory scanner and time control for browser games. Pick a tab, find a value, and edit it.",
 
   "permissions": ["tabs", "webNavigation", "storage"],
   "host_permissions": ["<all_urls>"],

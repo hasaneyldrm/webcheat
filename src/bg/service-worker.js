@@ -1,9 +1,9 @@
 /**
  * WebCheat service worker.
  *
- * Iki isi var:
- *   1. Uzanti ikonuna basilinca CE penceresini acmak
- *   2. Panel ile hedef frame'ler arasinda RPC trafigini yonlendirmek
+ * It has two jobs:
+ *   1. Open the CE window when the extension icon is clicked.
+ *   2. Route RPC traffic between the panel and target frames.
  */
 
 const PANEL_URL = 'src/ui/panel.html';
@@ -32,23 +32,23 @@ chrome.windows.onRemoved.addListener((id) => {
 });
 
 /**
- * Tek bir frame'e RPC gonder.
+ * Send an RPC call to a single frame.
  *
- * timeoutMs sart: askiya alinmis / donmus / servis worker'i olmeyen sekmelerde
- * sendMessage ne yanit doner ne de lastError set eder — sonsuza kadar asili
- * kalir. Tek bir bozuk sekme butun sekme listesini kilitliyordu.
+ * timeoutMs is required: for suspended, frozen, or worker-less tabs, sendMessage
+ * neither returns a response nor sets lastError, so it hangs forever. One broken
+ * tab used to block the entire tab list.
  */
 function rpc(tabId, frameId, payload, timeoutMs = 0) {
   return new Promise((resolve) => {
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
 
-    if (timeoutMs > 0) setTimeout(() => done({ error: 'zaman asimi' }), timeoutMs);
+    if (timeoutMs > 0) setTimeout(() => done({ error: 'timeout' }), timeoutMs);
 
     try {
       chrome.tabs.sendMessage(tabId, { __wce: 'rpc', payload }, { frameId }, (res) => {
         if (chrome.runtime.lastError) done({ error: chrome.runtime.lastError.message });
-        else done(res || { error: 'bos yanit' });
+        else done(res || { error: 'empty response' });
       });
     } catch (e) {
       done({ error: String(e && e.message || e) });
@@ -59,13 +59,12 @@ function rpc(tabId, frameId, payload, timeoutMs = 0) {
 const PROBE_TIMEOUT = 1500;
 
 /**
- * Taranabilir hedefleri listele.
+ * List scannable targets.
  *
- * Agent'i OLMAYAN sekmeleri de listeye koyuyoruz. Sebep: kullanicinin oyun
- * sekmesi cogu zaman uzanti kurulmadan/yenilenmeden once acilmis oluyor, o
- * sekmede content script yok. Onceden bu sekmeler listeden tamamen dusuyor ve
- * "sekmeyi bulamiyor" gibi gorunuyordu. Simdi gorunuyorlar, "agent yok"
- * isaretiyle — panel de yanina "Sekmeyi Yenile" diyor.
+ * Tabs WITHOUT the agent are also listed. The game tab was often opened before
+ * the extension was installed or reloaded, so it has no content script.
+ * Previously those tabs disappeared from the list and looked impossible to
+ * find. They now appear with a "no agent" marker and the panel offers Reload Tab.
  */
 async function listTargets() {
   const tabs = await chrome.tabs.query({});
@@ -83,7 +82,7 @@ async function listTargets() {
       hasMemory: false
     };
 
-    // Uykuya alinmis sekmeyi uyandirmayalim — listede "askida" olarak gecsin
+    // Do not wake a discarded tab; show it as discarded in the list.
     if (tab.discarded) return base;
 
     let frames = [];
@@ -113,7 +112,7 @@ async function listTargets() {
   }));
 
   const out = results.filter(Boolean);
-  // WASM'li sekmeler once, sonra agent'i olanlar, en sona olmayanlar
+  // Sort WASM tabs first, then tabs with an agent, and tabs without one last.
   out.sort((a, b) =>
     (b.hasMemory - a.hasMemory) ||
     (b.hasAgent - a.hasAgent) ||
@@ -132,7 +131,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ result: await listTargets() });
           break;
         case 'rpc':
-          // Panel hicbir zaman sonsuza kadar beklemesin
+          // Never let the panel wait forever.
           sendResponse(await rpc(msg.tabId, msg.frameId, msg.payload, 20000));
           break;
         case 'reload':
@@ -140,7 +139,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ result: { ok: true } });
           break;
         default:
-          sendResponse({ error: 'bilinmeyen op: ' + msg.op });
+          sendResponse({ error: 'unknown operation: ' + msg.op });
       }
     } catch (e) {
       sendResponse({ error: String(e && e.message || e) });

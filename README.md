@@ -173,17 +173,17 @@ The tab dropdown labels every tab so you always know where you stand:
 |---|---|---|
 | `[WASM]` | Agent present, memory found | Ready — scan away |
 | *(none)* | Agent present, no memory yet | Game is still loading; the panel keeps polling |
-| `[agent yok]` | Content script never injected | Hit **Reload tab** |
-| `[askıda]` | Chrome discarded the tab | Visit the tab once, then **Refresh** |
+| `[no agent]` | Content script never injected | Hit **Reload Tab** |
+| `[discarded]` | Chrome discarded the tab | Visit the tab once, then **Refresh** |
 
 The **diagnostics line** under Time Control explains speed problems directly:
 
 | It says | Meaning |
 |---|---|
-| `render döngüsü: 60 fps · saat okuma: 14.203` | Healthy — speed control will work |
-| `bu frame'de çalışan bir oyun döngüsü yok` | Wrong frame selected |
-| `oyun saati hiç okumuyor` | Fixed-timestep game; speed can't affect it |
-| `paylaşımlı bellek (pthread)` | Game loop lives in a Worker — scanning works, time control can't reach it |
+| `render loop: 60 fps · clock reads: 14,203` | Healthy — speed control will work |
+| `no game loop is running in this frame` | Wrong frame selected |
+| `the game never reads the clock` | Fixed-timestep game; speed can't affect it |
+| `shared memory (pthread)` | Game loop lives in a Worker — scanning works, time control can't reach it |
 
 ## Development
 

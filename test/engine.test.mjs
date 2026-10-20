@@ -209,7 +209,7 @@ call('firstScan', { region: REG, type: 'i8', cmp: 'eq', value: '99999' });
 await sleep(30);
 const prog = A.rpc(JSON.stringify({ cmd: 'progress', args: {} })).result;
 ok('i8\'e sigmayan deger hata olarak bildirildi',
-   !prog.running && /temsil edilemiyor/.test(prog.error || ''), prog.error || '(hata yok)');
+   !prog.running && /cannot be represented/.test(prog.error || ''), prog.error || '(hata yok)');
 
 console.log('\n== teshis ==');
 call('setSpeed', { speed: 1 });

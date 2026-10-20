@@ -1,8 +1,8 @@
 /**
  * WebCheat bridge — ISOLATED world.
  *
- * MAIN world'deki agent chrome.* API'lerine erisemez, uzanti sayfasi da
- * sayfanin JS realm'ine giremez. Bu dosya ikisini birbirine baglar:
+ * The MAIN-world agent cannot access chrome.* APIs, and the extension page
+ * cannot enter the page's JavaScript realm. This file connects the two:
  *
  *   panel --(chrome.runtime)--> service worker --(tabs.sendMessage)--> bridge
  *   bridge --(window.postMessage)--> agent --(window.postMessage)--> bridge
@@ -31,7 +31,7 @@
         resolve: resolve,
         timer: setTimeout(function () {
           delete pending[id];
-          resolve({ error: 'agent yanit vermedi (sayfayi yenile)' });
+          resolve({ error: 'agent did not respond (reload the page)' });
         }, 15000)
       };
       window.postMessage({ __wce: 'req', id: id, payload: JSON.stringify(payload) }, '*');
@@ -41,6 +41,6 @@
   chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     if (!msg || msg.__wce !== 'rpc') return;
     callAgent(msg.payload).then(sendResponse);
-    return true; // async yanit
+    return true; // asynchronous response
   });
 })();

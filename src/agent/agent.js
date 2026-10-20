@@ -1,14 +1,14 @@
 /**
  * WebCheat agent — MAIN world.
  *
- * Sayfanin kendi JS realm'inde calisir. Uc isi var:
- *   1. WebAssembly.Memory nesnelerini yakalamak (oyunun "RAM"i)
- *   2. O bellek uzerinde Cheat Engine tarzi tarama / yazma / dondurma
- *   3. Sanal saat ile oyunu hizlandirmak / yavaslatmak / duraklatmak
+ * Runs in the page's own JavaScript realm. It has three jobs:
+ *   1. Capture WebAssembly.Memory objects (the game's "RAM").
+ *   2. Scan, write, and freeze that memory in Cheat Engine style.
+ *   3. Speed up, slow down, or pause the game using a virtual clock.
  *
- * document_start'ta yuklenmesi sart: WebAssembly hook'lari oyun instantiate
- * etmeden once takilmali. Sayfa zaten acikken uzanti kurulduysa bir kez
- * reload gerekir.
+ * It must load at document_start: WebAssembly hooks need to be installed before
+ * the game instantiates. If the extension was installed while the page was
+ * already open, the page must be reloaded once.
  */
 (function () {
   'use strict';
@@ -16,7 +16,7 @@
   if (window.__WCE__) return;
 
   /* --------------------------------------------------------------------- *
-   * Orijinal referanslar — kendi hook'larimizdan etkilenmemek icin
+   * Original references — kept separate so our own hooks do not affect them
    * --------------------------------------------------------------------- */
   var O = {
     now: performance.now.bind(performance),
@@ -30,7 +30,7 @@
   };
 
   /* --------------------------------------------------------------------- *
-   * Deger tipleri
+   * Value types
    * --------------------------------------------------------------------- */
   var TYPES = {
     i8:  { size: 1, arr: Int8Array,    big: false, get: function (d, o) { return d.getInt8(o); },        set: function (d, o, v) { d.setInt8(o, v); } },
@@ -47,18 +47,18 @@
 
   function parseValue(type, raw) {
     var t = TYPES[type];
-    if (!t) throw new Error('bilinmeyen tip: ' + type);
+    if (!t) throw new Error('unknown type: ' + type);
     if (t.big) return BigInt(String(raw).trim());
     var n = Number(raw);
-    if (!isFinite(n)) throw new Error('gecersiz sayi: ' + raw);
+    if (!isFinite(n)) throw new Error('invalid number: ' + raw);
     return n;
   }
 
-  // JSON'a BigInt gonderemiyoruz — string'e ceviriyoruz.
+  // JSON cannot carry BigInt values, so convert them to strings.
   function outValue(v) { return typeof v === 'bigint' ? v.toString() : v; }
 
   /* --------------------------------------------------------------------- *
-   * Bolgeler (regions) — taranabilir bellek alanlari
+   * Regions — scannable memory areas
    * --------------------------------------------------------------------- */
   var regions = [];
   var regionSeq = 0;
@@ -90,11 +90,11 @@
 
   function getRegion(id) {
     for (var i = 0; i < regions.length; i++) if (regions[i].id === id) return regions[i];
-    throw new Error('bolge bulunamadi: ' + id);
+    throw new Error('region not found: ' + id);
   }
 
   /* --------------------------------------------------------------------- *
-   * WebAssembly hook'lari
+   * WebAssembly hooks
    * --------------------------------------------------------------------- */
   (function hookWasm() {
     var WA = window.WebAssembly;
@@ -104,7 +104,7 @@
       try {
         var im = importObject && importObject.env && importObject.env.memory;
         if (im) addWasmMemory(im, 'imports.env.memory');
-      } catch (e) { /* import objesi exotic olabilir */ }
+      } catch (e) { /* the import object may be exotic */ }
       try {
         var inst = result && result.instance ? result.instance : result;
         var ex = inst && inst.exports;
@@ -152,13 +152,13 @@
   })();
 
   /**
-   * Gec kesif: hook'lardan kacan Emscripten/Unity modullerini yakala.
-   * (uzanti sayfa yuklendikten sonra kurulduysa bu devreye girer)
+   * Late discovery: capture Emscripten/Unity modules missed by the hooks.
+   * (This applies when the extension is installed after the page has loaded.)
    */
   var lastSweep = 0;
   function sweepGlobals() {
-    // Her "hello"da global gezmek pahali: sekme listesi tum frame'leri
-    // yokluyor ve YouTube gibi sayfalarda binlerce global var.
+    // Scanning globals on every "hello" is expensive: the tab list probes every
+    // frame, and pages such as YouTube expose thousands of globals.
     var t0 = O.now();
     if (t0 - lastSweep < 1500) return;
     lastSweep = t0;
@@ -178,7 +178,7 @@
           if (v.Module.wasmMemory instanceof OrigMemory) addWasmMemory(v.Module.wasmMemory, names[i] + '.Module.wasmMemory');
           if (v.Module.HEAPU8 && v.Module.HEAPU8.buffer instanceof ArrayBuffer) addBufferRegion(v.Module.HEAPU8.buffer, names[i] + '.Module.HEAPU8');
         }
-      } catch (e) { /* getter patlayabilir */ }
+      } catch (e) { /* a getter may throw */ }
     }
   }
 
@@ -195,7 +195,7 @@
     });
   }
 
-  /** Sayfada hangi oyun motoru var — teshis icin. */
+  /** Detect the game engine on the page for diagnostics. */
   function detectEngine() {
     var hits = [];
     var probes = [
@@ -211,18 +211,18 @@
   }
 
   /* --------------------------------------------------------------------- *
-   * Tarama motoru
+   * Scan engine
    * --------------------------------------------------------------------- */
-  var MAX_RESULTS = 4000000;   // ~16 MB offset tablosu
-  var SLICE = 4000000;         // tik basina islenecek slot sayisi
+  var MAX_RESULTS = 4000000;   // ~16 MB offset table
+  var SLICE = 4000000;         // slots processed per tick
 
-  var scan = null;   // aktif tarama state'i
-  var job = null;    // calisan tarama isi
+  var scan = null;   // active scan state
+  var job = null;    // running scan job
 
   /**
-   * "Hepsi" taramasinda denenen tipler — CE'nin "All" deger tipinin karsiligi.
-   * u8/u16/u32 bilerek yok: ayni bit deseni zaten i8/i16/i32 ile yakalanir,
-   * sadece isaret yorumu degisir. Lane sayisini iki katina cikarmaya degmez.
+   * Types tried by an "All" scan, matching CE's "All" value type.
+   * u8/u16/u32 are intentionally omitted: i8/i16/i32 already match the same bit
+   * patterns; only signedness interpretation changes. Doubling the lanes is not worth it.
    */
   var MULTI_TYPES = ['i8', 'i16', 'i32', 'i64', 'f32', 'f64'];
 
@@ -232,12 +232,12 @@
     i32: [-2147483648, 2147483647], u32: [0, 4294967295]
   };
 
-  /** Deger bu tipte temsil edilebilir mi? "Hepsi" modunda bos lane elemek icin. */
+  /** Whether a value can be represented by this type, used to prune empty lanes in "All" mode. */
   function fitsType(typeName, raw) {
     var s = String(raw == null ? '' : raw).trim();
     if (s === '') return false;
     if (typeName === 'f32' || typeName === 'f64') return isFinite(Number(s));
-    if (!/^-?\d+$/.test(s)) return false;           // ondalik sayi tam sayi tipine girmez
+    if (!/^-?\d+$/.test(s)) return false;           // decimal values do not fit integer types
     var t = TYPES[typeName];
     if (t.big) {
       try {
@@ -253,23 +253,23 @@
   }
 
   /**
-   * Tarama state'i. Sonuclar "lane"lere bolunur: lane i'nin sonuclari
-   * offs[laneEnd[i-1] .. laneEnd[i]) araligindadir ve types[i] tipindedir.
-   * Tek tipli taramada tek lane var; "Hepsi"nde tip basina bir lane.
+   * Scan state. Results are split into lanes: the results for lane i occupy
+   * offs[laneEnd[i-1] .. laneEnd[i]) and use types[i]. Single-type scans have
+   * one lane; "All" scans have one lane per type.
    */
   function freshScan(regionId, types, aligned, multi) {
     return {
       region: regionId,
-      types: types,        // lane tip adlari
+      types: types,        // lane type names
       multi: !!multi,
       aligned: aligned !== false,
       mode: 'none',        // 'none' | 'all' | 'list'
-      offs: null,          // Uint32Array — eslesen byte offsetleri
-      laneEnd: [],         // her lane'in offs icindeki bitis indeksi
+      offs: null,          // Uint32Array — matching byte offsets
+      laneEnd: [],         // end index of each lane in offs
       count: 0,
-      prevNum: null,       // Float64Array — onceki degerler
-      prevBig: null,       // tek tipli 64-bit taramada tam hassasiyet
-      snap: null,          // 'all' modunda tam bellek kopyasi
+      prevNum: null,       // Float64Array — previous values
+      prevBig: null,       // full precision for a single-type 64-bit scan
+      snap: null,          // full memory copy in 'all' mode
       truncated: false
     };
   }
@@ -284,7 +284,7 @@
     return scan.prevNum ? scan.prevNum[i] : undefined;
   }
 
-  /** BigInt ile Number'i karsilastiramayiz; karisik lane'lerde sayiya indir. */
+  /** BigInt and Number cannot be compared directly; coerce to Number in mixed lanes. */
   function cmpVal(v) { return typeof v === 'bigint' ? Number(v) : v; }
 
   function storePrev(values, n) {
@@ -299,7 +299,7 @@
     }
   }
 
-  // Buyuyebilen Uint32Array
+  // Growable Uint32Array
   function Grow() {
     this.buf = new Uint32Array(1 << 16);
     this.n = 0;
@@ -335,7 +335,7 @@
       case 'dec':       return function (c, p) { return c < p; };
       case 'incBy':     return function (c, p) { return c - p === a; };
       case 'decBy':     return function (c, p) { return p - c === a; };
-      default: throw new Error('bilinmeyen karsilastirma: ' + op);
+      default: throw new Error('unknown comparison: ' + op);
     }
   }
 
@@ -352,30 +352,30 @@
     return Math.max(0, Math.floor((byteLen - t.size) / step) + 1);
   }
 
-  /** Ilk tarama. type='all' ise tum tipler ayri lane olarak taranir. */
+  /** First scan. If type='all', each type is scanned in a separate lane. */
   async function firstScan(opts) {
     var region = getRegion(opts.region);
     var aligned = opts.aligned !== false;
     var multi = opts.type === 'all';
     var types = multi ? MULTI_TYPES.slice() : [opts.type];
     for (var ti = 0; ti < types.length; ti++) {
-      if (!TYPES[types[ti]]) throw new Error('bilinmeyen tip: ' + types[ti]);
+      if (!TYPES[types[ti]]) throw new Error('unknown type: ' + types[ti]);
     }
 
     scan = freshScan(opts.region, types, aligned, multi);
     var byteLen = region.buffer().byteLength;
 
-    // --- Bilinmeyen deger: adres listesi tutmak yerine tam kopya al ---
+    // --- Unknown value: take a full snapshot instead of storing an address list ---
     if (opts.cmp === 'unknown') {
       var j0 = startJob(byteLen);
       var snap = new Uint8Array(byteLen);
       var CH = 8 << 20;
       for (var off = 0; off < byteLen; off += CH) {
         if (j0.cancel) { j0.running = false; return; }
-        // WASM bellegi tarama sirasinda buyurse eski ArrayBuffer detach olur.
-        // Sessizce yarim snapshot almaktansa acikca patla.
+        // If WASM memory grows during a scan, the old ArrayBuffer is detached.
+        // Fail explicitly rather than silently capturing a partial snapshot.
         var live = region.buffer();
-        if (live.byteLength < byteLen) throw new Error('bellek tarama sirasinda yeniden boyutlandi — tekrar tara');
+        if (live.byteLength < byteLen) throw new Error('memory was resized during the scan — scan again');
         var end0 = Math.min(off + CH, byteLen);
         snap.set(new Uint8Array(live, off, end0 - off), off);
         j0.done = end0;
@@ -389,16 +389,16 @@
       return;
     }
 
-    // --- Degerli ilk tarama ---
+    // --- First scan with a value ---
     var cmp = opts.cmp || 'eq';
-    // Degeri temsil edemeyen tipleri lane listesinden dusur: 300 yazdiysan
-    // i8'i taramanin anlami yok, 57.5 yazdiysan tam sayi tiplerinin.
+    // Drop types that cannot represent the value: if the user entered 300,
+    // scanning i8 is pointless; for 57.5, integer types are pointless.
     var lanes = types.filter(function (tn) {
       if (!fitsType(tn, opts.value)) return false;
       if (cmp === 'between' && !fitsType(tn, opts.value2)) return false;
       return true;
     });
-    if (!lanes.length) throw new Error('"' + opts.value + '" secili tip(ler)de temsil edilemiyor');
+    if (!lanes.length) throw new Error('"' + opts.value + '" cannot be represented by the selected type(s)');
     scan.types = lanes;
 
     var totalSlots = lanes.reduce(function (s, tn) { return s + slotCount(byteLen, tn, aligned); }, 0);
@@ -418,7 +418,7 @@
       var slots = slotCount(byteLen, tn, aligned);
 
       if (aligned) {
-        // Hizli yol: dogrudan typed array uzerinde gez
+        // Fast path: iterate directly over the typed array.
         var i = 0;
         while (i < slots) {
           if (j.cancel) break;
@@ -436,7 +436,7 @@
           await yieldTick();
         }
       } else {
-        // Hizalanmamis yol: DataView, byte byte
+        // Unaligned path: use DataView byte by byte.
         var k = 0;
         while (k < slots) {
           if (j.cancel) break;
@@ -469,23 +469,23 @@
     j.running = false;
   }
 
-  /** Sonraki tarama — mevcut sonuc kumesini daraltir, lane yapisini korur. */
+  /** Next scan — narrows the current result set while preserving lane structure. */
   async function nextScan(opts) {
-    if (!scan || scan.mode === 'none') throw new Error('once ilk taramayi yap');
+    if (!scan || scan.mode === 'none') throw new Error('run a first scan before narrowing');
     var region = getRegion(scan.region);
     var cmp = opts.cmp || 'eq';
     var usesPrev = !!NEEDS_PREV[cmp];
     var wantsValue = !usesPrev || cmp === 'incBy' || cmp === 'decBy';
     var hasValue = opts.value != null && opts.value !== '';
-    if (wantsValue && !hasValue) throw new Error('bu karsilastirma icin deger gerekli');
+    if (wantsValue && !hasValue) throw new Error('this comparison requires a value');
 
     var lanes = scan.types;
     var out = new Grow();
     var prev = [];
     var laneEnd = [];
-    var exactPrev = !!scan.prevBig;   // tek tipli 64-bit: BigInt karsilastirmasi
+    var exactPrev = !!scan.prevBig;   // single-type 64-bit: BigInt comparison
 
-    /** Lane bu degeri temsil edemiyorsa hic taramaya girme. */
+    /** Skip a lane entirely if it cannot represent this value. */
     function laneUsable(tn) {
       if (!hasValue) return true;
       if (!wantsValue) return true;
@@ -501,7 +501,7 @@
     }
 
     if (scan.mode === 'all') {
-      // Snapshot'a karsi tam tarama — sonuc artik seyrek bir liste olur
+      // Full scan against the snapshot; the result becomes a sparse list.
       var byteLen = region.buffer().byteLength;
       var snapView = new DataView(scan.snap.buffer);
       var totalSlots = lanes.reduce(function (s, tn) { return s + slotCount(byteLen, tn, scan.aligned); }, 0);
@@ -545,12 +545,12 @@
         base += slots;
       }
 
-      scan.snap = null; // artik gerek yok, RAM'i birak
+      scan.snap = null; // no longer needed; release the memory
       j.done = j.total;
       j.found = out.n;
       j.running = false;
     } else {
-      // Liste modu — sadece mevcut adresleri, kendi lane tipiyle kontrol et
+      // List mode — check only existing addresses using each lane's own type.
       var j2 = startJob(scan.count);
       var start = 0;
 
@@ -578,7 +578,7 @@
             if (off2 + t2.size > lim) continue;
             var cur2 = t2.get(dv2, off2);
             var p = usesPrev ? prevAt(n) : undefined;
-            // prev sayisal tutuluyorsa BigInt tarafi da sayiya indirilmeli
+            // If previous values are numeric, coerce the BigInt side to Number too.
             var c2 = exactPrev ? cur2 : cmpVal(cur2);
             if (pred2(c2, p)) {
               out.push(off2);
@@ -605,7 +605,7 @@
     storePrev(prev, out.n);
   }
 
-  /** Lane basina sonuc sayisi — "hangi tipte kac tane" ozeti icin. */
+  /** Result count per lane, used for the per-type summary. */
   function laneCounts() {
     var out = {};
     var start = 0;
@@ -648,7 +648,7 @@
   }
 
   /* --------------------------------------------------------------------- *
-   * Okuma / yazma / dondurma
+   * Read / write / freeze
    * --------------------------------------------------------------------- */
   function readAddr(regionId, addr, type) {
     var region = getRegion(regionId);
@@ -662,12 +662,12 @@
     var region = getRegion(regionId);
     var t = TYPES[type];
     var dv = new DataView(region.buffer());
-    if (addr < 0 || addr + t.size > dv.byteLength) throw new Error('adres bellek disinda');
+    if (addr < 0 || addr + t.size > dv.byteLength) throw new Error('address is outside memory');
     t.set(dv, addr, parseValue(type, value));
     return true;
   }
 
-  // Dondurulan adresler
+  // Frozen addresses
   var frozen = Object.create(null);
   var freezeSeq = 0;
   var freezeTimer = null;
@@ -675,7 +675,7 @@
   function freezeTick() {
     for (var k in frozen) {
       var f = frozen[k];
-      try { writeAddr(f.region, f.addr, f.type, f.value); } catch (e) { /* bellek buyumus/kucumus olabilir */ }
+      try { writeAddr(f.region, f.addr, f.type, f.value); } catch (e) { /* memory may have grown or shrunk */ }
     }
   }
 
@@ -695,16 +695,16 @@
   }
 
   /* --------------------------------------------------------------------- *
-   * Sanal saat — hizlandirma / yavaslatma / duraklatma
+   * Virtual clock — speed up / slow down / pause
    * --------------------------------------------------------------------- *
-   * Oyunlar delta time'i performance.now()/rAF timestamp'inden hesaplar.
-   * Sanal saati hizli akitirsak simulasyon da hizlanir. Kod tarafinda
-   * "1 kare = 1 kare" kaldigi icin fizik bozulmaz, sadece dt buyur.
+   * Games calculate delta time from performance.now() or rAF timestamps.
+   * Advancing the virtual clock faster speeds up the simulation. The code still
+   * sees one frame per frame, so physics stays intact and only dt increases.
    */
   var Clock = {
     speed: 1,
-    // Uzanti <all_urls>'e enjekte oluyor. Hiz hic degistirilmediyse saat
-    // TAMAMEN pass-through kalir — gezdigin hicbir sayfa etkilenmez.
+    // The extension is injected into <all_urls>. Until speed is changed, the
+    // clock remains a complete pass-through and normal browsing is unaffected.
     dirty: false,
     _rBase: O.now(),
     _vBase: O.now(),
@@ -716,7 +716,7 @@
     },
     setSpeed: function (s) {
       var real = O.now();
-      // Ilk sapmada sanal saati o anki gercek zamandan baslat
+      // On the first adjustment, start virtual time from the current real time.
       var v = this.dirty ? this._at(real) : real;
       var d = this.dirty ? this._dBase + (real - this._rBase) * this.speed : O.dateNow();
       this._vBase = v;
@@ -733,8 +733,8 @@
   };
 
   /**
-   * Teshis sayaclari. "Hiz calismiyor" dedigimizde sebebi bunlar soyler:
-   * oyun dongusu bu frame'de mi, saati kimden okuyor, kac fps.
+   * Diagnostic counters. These explain why speed control may not work:
+   * whether the game loop is in this frame, which clock it reads, and its FPS.
    */
   var stats = { now: 0, dateNow: 0, raf: 0, timeout: 0, interval: 0, rafWindow: [] };
 
@@ -762,7 +762,7 @@
       };
     }
 
-    // Zamanlayicilari hiza gore olcekle: 2x hizda 1000ms -> 500ms
+    // Scale timers by speed: at 2x, 1000 ms becomes 500 ms.
     function scale(delay) {
       var d = Number(delay) || 0;
       if (!Clock.dirty || Clock.speed <= 0) return d;
@@ -784,15 +784,15 @@
    * RPC
    * --------------------------------------------------------------------- */
   /**
-   * Taramayi arka planda baslatir; hata progress() uzerinden geri doner.
+   * Starts scanning in the background; errors are returned through progress().
    *
-   * Onceden .catch icinde "if (job)" vardi: ilk taramada henuz job olmadigi
-   * icin (orn. "deger bu tipte temsil edilemiyor") hata hicbir yere yazilmadan
-   * kayboluyor, panel sonsuza kadar bos sonuc gosteriyordu. Simdi cagriyla
-   * birlikte bir job olusuyor, hata her durumda bir yere dusuyor.
+   * The .catch block used to contain "if (job)." If a first scan failed before
+   * a job existed (for example, the value could not fit the type), the error
+   * disappeared and the panel showed empty results forever. A job is now
+   * created with the call, so every error has somewhere to go.
    */
   function launch(fn, args) {
-    if (job && job.running) throw new Error('tarama zaten calisiyor');
+    if (job && job.running) throw new Error('a scan is already running');
     job = { total: 0, done: 0, found: 0, running: true, error: null, cancel: false };
     Promise.resolve()
       .then(function () { return fn(args); })
@@ -866,9 +866,9 @@
 
   function rpc(payloadJson) {
     var req;
-    try { req = JSON.parse(payloadJson); } catch (e) { return { error: 'gecersiz istek' }; }
+    try { req = JSON.parse(payloadJson); } catch (e) { return { error: 'invalid request' }; }
     var h = HANDLERS[req.cmd];
-    if (!h) return { error: 'bilinmeyen komut: ' + req.cmd };
+    if (!h) return { error: 'unknown command: ' + req.cmd };
     try {
       return { result: h(req.args || {}) };
     } catch (e) {
@@ -879,7 +879,7 @@
   window.__WCE__ = { rpc: rpc, version: 1 };
 
   /* --------------------------------------------------------------------- *
-   * Bridge (ISOLATED world) ile kopru
+   * Bridge to the ISOLATED world
    * --------------------------------------------------------------------- */
   window.addEventListener('message', function (ev) {
     if (ev.source !== window) return;

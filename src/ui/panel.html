@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <title>WebCheat</title>
@@ -18,104 +18,104 @@
     </div>
 
     <div class="target">
-      <select id="tabSel" title="Hedef sekme"></select>
-      <select id="frameSel" title="Hedef frame (oyun genelde iframe icinde)"></select>
-      <button id="refreshBtn" class="ghost" title="Sekmeleri tara">Yenile</button>
-      <button id="reloadBtn" class="ghost" title="Hook'lar oyundan once takilsin diye sekmeyi yeniler">Sekmeyi Yenile</button>
+      <select id="tabSel" title="Target tab"></select>
+      <select id="frameSel" title="Target frame (the game is often inside an iframe)"></select>
+      <button id="refreshBtn" class="ghost" title="Scan tabs">Refresh</button>
+      <button id="reloadBtn" class="ghost" title="Reload the tab so hooks are installed before the game starts">Reload Tab</button>
     </div>
 
     <div class="status">
       <span id="dot" class="dot"></span>
-      <span id="statusText">bagli degil</span>
+      <span id="statusText">not connected</span>
     </div>
   </header>
 
   <main>
-    <!-- ---------------- Sol: tarama ---------------- -->
+    <!-- ---------------- Left: scanning ---------------- -->
     <section class="col scan">
-      <h2>Tarama</h2>
+      <h2>Scan</h2>
 
       <div class="row">
-        <label for="regionSel">Bellek</label>
+        <label for="regionSel">Memory</label>
         <select id="regionSel"></select>
       </div>
 
       <div class="row two">
         <div>
-          <label for="typeSel">Deger tipi</label>
+          <label for="typeSel">Value type</label>
           <select id="typeSel">
-            <option value="all">Hepsi (tum tipler)</option>
+            <option value="all">All (every type)</option>
             <option value="i32" selected>4 Byte (i32)</option>
             <option value="f32">Float (f32)</option>
             <option value="f64">Double (f64)</option>
             <option value="i16">2 Byte (i16)</option>
             <option value="i8">1 Byte (i8)</option>
-            <option value="u8">1 Byte isaretsiz (u8)</option>
-            <option value="u16">2 Byte isaretsiz (u16)</option>
-            <option value="u32">4 Byte isaretsiz (u32)</option>
+            <option value="u8">1 Byte unsigned (u8)</option>
+            <option value="u16">2 Byte unsigned (u16)</option>
+            <option value="u32">4 Byte unsigned (u32)</option>
             <option value="i64">8 Byte (i64)</option>
-            <option value="u64">8 Byte isaretsiz (u64)</option>
+            <option value="u64">8 Byte unsigned (u64)</option>
           </select>
         </div>
         <div>
-          <label for="cmpSel">Tarama tipi</label>
+          <label for="cmpSel">Scan type</label>
           <select id="cmpSel"></select>
         </div>
       </div>
 
       <div class="row two">
         <div>
-          <label for="valInput">Deger</label>
-          <input id="valInput" type="text" placeholder="orn. 100" autocomplete="off">
+          <label for="valInput">Value</label>
+          <input id="valInput" type="text" placeholder="e.g. 100" autocomplete="off">
         </div>
         <div id="val2Wrap" class="hidden">
-          <label for="val2Input">ve</label>
-          <input id="val2Input" type="text" placeholder="ust sinir" autocomplete="off">
+          <label for="val2Input">and</label>
+          <input id="val2Input" type="text" placeholder="upper bound" autocomplete="off">
         </div>
       </div>
 
       <label class="check">
         <input id="alignedChk" type="checkbox" checked>
-        <span>Hizali tarama <em>(hizli — kapatirsan cok yavas ama daha kapsamli)</em></span>
+        <span>Aligned scan <em>(fast — disabling it is much slower but more thorough)</em></span>
       </label>
 
       <div class="btns">
-        <button id="firstBtn" class="primary">Ilk Tarama</button>
-        <button id="nextBtn" disabled>Sonraki Tarama</button>
-        <button id="newBtn" class="ghost">Yeni Tarama</button>
-        <button id="cancelBtn" class="ghost hidden">Iptal</button>
+        <button id="firstBtn" class="primary">First Scan</button>
+        <button id="nextBtn" disabled>Next Scan</button>
+        <button id="newBtn" class="ghost">New Scan</button>
+        <button id="cancelBtn" class="ghost hidden">Cancel</button>
       </div>
 
       <div class="progress"><div id="progBar"></div></div>
-      <div class="found"><span id="foundText">Sonuc yok</span></div>
+      <div class="found"><span id="foundText">No results</span></div>
 
       <div class="results">
         <table>
-          <thead><tr><th>Adres</th><th class="w-typ">Tip</th><th>Deger</th><th>Onceki</th></tr></thead>
+          <thead><tr><th>Address</th><th class="w-typ">Type</th><th>Value</th><th>Previous</th></tr></thead>
           <tbody id="resBody"></tbody>
         </table>
-        <div id="resHint" class="hint">Degeri oyunda gordugun gibi gir, <b>Ilk Tarama</b>'ya bas.
-          Sonra oyunda degeri degistir, <b>Sonraki Tarama</b> ile daralt. Satira cift tikla &rarr; listeye ekle.</div>
+        <div id="resHint" class="hint">Enter the value exactly as it appears in the game, then click <b>First Scan</b>.
+          Change the value in the game and narrow the results with <b>Next Scan</b>. Double-click a row &rarr; add it to the list.</div>
       </div>
     </section>
 
-    <!-- ---------------- Sag: adres listesi + zaman ---------------- -->
+    <!-- ---------------- Right: address list + time ---------------- -->
     <section class="col list">
-      <h2>Adres Listesi</h2>
+      <h2>Address List</h2>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th class="w-frz">Dondur</th><th>Aciklama</th><th>Adres</th><th class="w-typ">Tip</th><th>Deger</th><th class="w-act"></th></tr>
+            <tr><th class="w-frz">Freeze</th><th>Description</th><th>Address</th><th class="w-typ">Type</th><th>Value</th><th class="w-act"></th></tr>
           </thead>
           <tbody id="listBody"></tbody>
         </table>
       </div>
       <div class="btns">
-        <button id="addManualBtn" class="ghost">Elle Adres Ekle</button>
-        <button id="clearListBtn" class="ghost">Listeyi Temizle</button>
+        <button id="addManualBtn" class="ghost">Add Address Manually</button>
+        <button id="clearListBtn" class="ghost">Clear List</button>
       </div>
 
-      <h2 class="mt">Zaman Kontrolu</h2>
+      <h2 class="mt">Time Control</h2>
       <div class="speed">
         <div class="presets" id="presets"></div>
         <div class="row">
@@ -123,13 +123,13 @@
           <output id="speedOut">1.00x</output>
         </div>
         <div class="btns">
-          <button id="pauseBtn" class="ghost">Duraklat</button>
-          <button id="stepBtn" class="ghost">Kare Ilerlet</button>
+          <button id="pauseBtn" class="ghost">Pause</button>
+          <button id="stepBtn" class="ghost">Frame Step</button>
         </div>
-        <div id="diag" class="diag">teshis bekleniyor…</div>
-        <p class="hint">Sanal saat <code>performance.now</code>, <code>Date.now</code>,
-          <code>requestAnimationFrame</code> ve zamanlayicilari olcekler. Oyun delta-time
-          kullaniyorsa simulasyon hizlanir; sabit adimli dongulerde etki daha az olur.</p>
+        <div id="diag" class="diag">waiting for diagnostics…</div>
+        <p class="hint">The virtual clock rescales <code>performance.now</code>, <code>Date.now</code>,
+          <code>requestAnimationFrame</code>, and timers. Games that use delta time will
+          speed up; fixed-step loops are affected less.</p>
       </div>
     </section>
   </main>
